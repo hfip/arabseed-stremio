@@ -1,27 +1,16 @@
-const express = require('express');
-const axios = require('axios');
+// api/index.js
 const cheerio = require('cheerio');
-const cors = require('cors');
 
-const app = express();
-app.use(cors());
-
-// ============ الإعدادات ============
+// ============ إعداد البروكسي الآمن من جوجل ============
+const GOOGLE_PROXY_URL = "https://script.google.com/macros/s/AKfycbwzwsaeYrNMVo39ot5D2ah72SWsN1NaKa-_0yagRowbZNnByWwBiu94mO6mAUjwVGhSrQ/exec";
 const BASE_URL = 'https://m.asd.ink';
-
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
-  'Referer': BASE_URL + '/'
-};
 
 // ============ Manifest ============
 const manifest = {
   id: 'org.arabseed.asd',
   version: '1.0.0',
-  name: 'ArabSeed (asd.ink)',
-  description: 'إضافة عرب سيد - أفلام ومسلسلات عربية',
+  name: 'ArabSeed (asd.ink) Proxy',
+  description: 'إضافة عرب سيد عبر بروكسي جوجل الآمن - أفلام ومسلسلات عربية واجنبية',
   logo: 'https://m.asd.ink/wp-content/uploads/2023/01/cropped-Untitled-1-1-192x192.png',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
@@ -48,9 +37,9 @@ const manifest = {
   idPrefixes: ['as_']
 };
 
-// ============ Cache ============
+// ============ Cache (التخزين المؤقت في الذاكرة) ============
 const cache = new Map();
-const CACHE_TTL = 60 * 60 * 1000; // ساعة
+const CACHE_TTL = 30 * 60 * 1000; // نصف ساعة لتحديث النتائج ديناميكياً
 
 const getCache = (key) => {
   const item = cache.get(key);
@@ -61,35 +50,56 @@ const getCache = (key) => {
 
 const setCache = (key, data) => {
   cache.set(key, { data, time: Date.now() });
-  if (cache.size > 500) {
+  if (cache.size > 300) {
     const firstKey = cache.keys().next().value;
     cache.delete(firstKey);
   }
 };
 
-// ============ مساعدات ============
+// ============ مساعدات التشفير وفك التشفير للمسارات ============
 const encodeId = (url) => 'as_' + Buffer.from(url).toString('base64url');
 const decodeId = (id) => Buffer.from(id.replace('as_', ''), 'base64url').toString();
 
-// ============ جلب القائمة ============
+// ============ الدالة المساعدة لطلب البيانات عبر بروكسي جوجل الآمن ============
+async function fetchViaProxy(action, targetUrl = '', searchQuery = '') {
+  try {
+    let proxyUrl = `${GOOGLE_PROXY_URL}?action=${action}`;
+    if (action === 'search') {
+      proxyUrl += `&q=${encodeURIComponent(searchQuery)}`;
+    } else if (action === 'get_links') {
+      proxyUrl += `&url=${encodeURIComponent(targetUrl)}`;
+    }
+
+    const response = await fetch(proxyUrl, { method: 'GET' });
+    if (!response.ok) throw new Error(`Proxy status: ${response.status}`);
+    return await response.text();
+  } catch (err) {
+    console.error(`فشل البروكسي في إجراء العملية ${action}:`, err.message);
+    return null;
+  }
+}
+
+// ============ جلب قائمة الأفلام/المسلسلات عبر البروكسي ============
 async function fetchCatalog(type, search, skip = 0) {
   try {
     const page = Math.floor(skip / 30) + 1;
-    let url;
+    let htmlData = "";
 
     if (search) {
-      url = `${BASE_URL}/?s=${encodeURIComponent(search)}`;
-    } else if (type === 'movie') {
-      url = page === 1 ? `${BASE_URL}/movies/` : `${BASE_URL}/movies/page/${page}/`;
+      htmlData = await fetchViaProxy('search', '', search);
     } else {
-      url = page === 1 ? `${BASE_URL}/series/` : `${BASE_URL}/series/page/${page}/`;
+      let targetUrl = type === 'movie' 
+        ? (page === 1 ? `${BASE_URL}/movies/` : `${BASE_URL}/movies/page/${page}/`)
+        : (page === 1 ? `${BASE_URL}/series/` : `${BASE_URL}/series/page/${page}/`);
+      
+      htmlData = await fetchViaProxy('get_links', targetUrl);
     }
 
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-    const $ = cheerio.load(data);
+    if (!htmlData) return [];
+
+    const $ = cheerio.load(htmlData);
     const results = [];
 
-    // selectors متعددة لضمان الالتقاط
     $('.MovieBlock, .Block--Item, article, .Small--Box').each((i, el) => {
       const $el = $(el);
       const linkEl = $el.find('a').first();
@@ -102,7 +112,7 @@ async function fetchCatalog(type, search, skip = 0) {
       const img = $el.find('img').first();
       const poster = img.attr('data-src') || img.attr('data-lazy-src') || img.attr('src');
 
-      if (link && title && link.includes(BASE_URL.replace('https://', ''))) {
+      if (link && title) {
         results.push({
           id: encodeId(link),
           type,
@@ -115,17 +125,19 @@ async function fetchCatalog(type, search, skip = 0) {
 
     return results;
   } catch (err) {
-    console.error('Catalog error:', err.message);
+    console.error('خطأ الكتالوج:', err.message);
     return [];
   }
 }
 
-// ============ جلب البيانات التفصيلية ============
+// ============ جلب البيانات التفصيلية عبر البروكسي ============
 async function fetchMeta(id, type) {
   try {
     const url = decodeId(id);
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-    const $ = cheerio.load(data);
+    const htmlData = await fetchViaProxy('get_links', url);
+    if (!htmlData) return null;
+
+    const $ = cheerio.load(htmlData);
 
     const name = $('h1').first().text().trim() || $('.Title--Block h1').text().trim();
     const poster = $('.Poster img, .single-thumb img, .post-thumbnail img').first().attr('src');
@@ -145,7 +157,6 @@ async function fetchMeta(id, type) {
       meta.genres.push($(el).text().trim());
     });
 
-    // للمسلسلات: استخراج الحلقات
     if (type === 'series') {
       const videos = [];
       $('.EpisodesList a, .episodes-list a, .ContainerEpisodesList a').each((i, el) => {
@@ -169,41 +180,39 @@ async function fetchMeta(id, type) {
 
     return meta;
   } catch (err) {
-    console.error('Meta error:', err.message);
+    console.error('خطأ جلب الميتا:', err.message);
     return null;
   }
 }
 
-// ============ استخراج روابط البث ============
+// ============ استخراج روابط البث المباشرة من السيرفرات ============
 async function fetchStreams(pageUrl) {
   const streams = [];
-  
   try {
-    // 1. جلب صفحة المحتوى
-    const { data: pageHtml } = await axios.get(pageUrl, { headers: HEADERS, timeout: 15000 });
-    const $ = cheerio.load(pageHtml);
+    // 1. جلب صفحة المحتوى الأساسية عبر البروكسي
+    const pageHtml = await fetchViaProxy('get_links', pageUrl);
+    if (!pageHtml) return [];
+    
+    let $ = cheerio.load(pageHtml);
 
-    // 2. البحث عن صفحة المشاهدة "watch"
+    // 2. فحص والتحويل لصفحة المشاهدة "watch"
     let watchUrl = pageUrl;
     const watchLink = $('a.watchBtn, a[href*="/watch/"], .WatchBTN a, a:contains("مشاهدة")').first().attr('href');
     if (watchLink) watchUrl = watchLink;
 
-    const { data: watchHtml } = await axios.get(watchUrl, { 
-      headers: { ...HEADERS, Referer: pageUrl }, 
-      timeout: 15000 
-    });
+    // جلب صفحة المشاهدة التي تحتوي السيرفرات والمشغلات عبر البروكسي لتخطي الحظر
+    const watchHtml = await fetchViaProxy('get_links', watchUrl);
+    if (!watchHtml) return [];
+    
     const $w = cheerio.load(watchHtml);
-
-    // 3. جمع كل السيرفرات
     const servers = [];
     
-    // السيرفرات بشكل أزرار/قوائم
+    // فحص السيرفرات المدمجة كأزرار
     $w('[data-link], [data-server], .server-item, .servers li, .ServersList li, ul.WatchVideoList li').each((i, el) => {
       const $el = $w(el);
       let link = $el.attr('data-link') || $el.attr('data-server') || $el.find('a').attr('href');
       const name = $el.text().trim() || `سيرفر ${i + 1}`;
       
-      // فك Base64 إذا موجود
       if (link && /^[A-Za-z0-9+/=]+$/.test(link) && link.length > 20) {
         try {
           const decoded = Buffer.from(link, 'base64').toString();
@@ -216,47 +225,46 @@ async function fetchStreams(pageUrl) {
       }
     });
 
-    // iframe الأساسي مثل /play.php?url=BASE64
+    // فحص وسحب الـ iframes والمشغلات المباشرة
     $w('iframe').each((i, el) => {
       let src = $w(el).attr('src') || $w(el).attr('data-src');
       if (!src) return;
       
-      // إذا كان relative
       if (src.startsWith('/')) src = BASE_URL + src;
       
-      // إذا كان play.php?url=base64
       const urlMatch = src.match(/[?&]url=([^&]+)/);
       if (urlMatch) {
         try {
           const decoded = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString();
           if (decoded.startsWith('http')) {
-            servers.push({ name: `Iframe ${i + 1}`, link: decoded });
+            servers.push({ name: `مشغل مدمج ${i + 1}`, link: decoded });
             return;
           }
         } catch (e) {}
       }
       
-      servers.push({ name: `Iframe ${i + 1}`, link: src });
+      servers.push({ name: `مشغل مدمج ${i + 1}`, link: src });
     });
 
-    console.log(`وُجد ${servers.length} سيرفر`);
-
-    // 4. استخراج الروابط من كل سيرفر بالتوازي
+    // 3. استخراج الروابط من السيرفرات المكتشفة بالتوازي لسرعة الأداء
     const extractions = await Promise.allSettled(
-      servers.slice(0, 8).map(s => extractFromServer(s, watchUrl))
+      servers.slice(0, 8).map(s => extractFromServer(s.link, watchUrl))
     );
 
     extractions.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value.length > 0) {
         result.value.forEach(link => {
           streams.push({
-            name: 'ArabSeed',
-            title: `${servers[i].name}\n${link.quality || 'Auto'}`,
+            name: 'ArabSeed Pro',
+            title: `${servers[i].name}\n🔗 ${link.quality}`,
             url: link.url,
             behaviorHints: {
               notWebReady: false,
               proxyHeaders: {
-                request: { 'Referer': servers[i].link, 'User-Agent': HEADERS['User-Agent'] }
+                request: { 
+                  'Referer': servers[i].link, 
+                  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' 
+                }
               }
             }
           });
@@ -266,63 +274,59 @@ async function fetchStreams(pageUrl) {
 
     return streams;
   } catch (err) {
-    console.error('Streams error:', err.message);
+    console.error('خطأ جلب السيرفرات:', err.message);
     return streams;
   }
 }
 
-// ============ استخراج رابط مباشر من سيرفر ============
-async function extractFromServer(server, referer) {
+// ============ جلب صفحة السيرفر واستخراج صيغ الفيديو (m3u8 / mp4) ============
+async function extractFromServer(serverLink, referer) {
   const links = [];
   try {
-    const { data } = await axios.get(server.link, {
-      headers: { ...HEADERS, Referer: referer },
-      timeout: 10000,
-      maxRedirects: 5
-    });
+    // نطلب السيرفر مباشرة عبر البروكسي للتأكد من تخطي حظر حمايات ملفات البث
+    const htmlData = await fetchViaProxy('get_links', serverLink);
+    if (!htmlData) return [];
 
-    let html = typeof data === 'string' ? data : JSON.stringify(data);
+    let html = htmlData;
 
-    // فك Packed JS (eval(function(p,a,c,k,e,d)...))
     if (html.includes('eval(function(p,a,c,k,e,')) {
       const unpacked = unpackJS(html);
       if (unpacked) html += '\n' + unpacked;
     }
 
-    // m3u8
+    // تصفية روابط البث المباشر HLS
     const m3u8Matches = html.match(/https?:\/\/[^\s"'<>\\)]+\.m3u8[^\s"'<>\\)]*/gi);
     if (m3u8Matches) {
       [...new Set(m3u8Matches)].forEach(url => 
-        links.push({ url: url.replace(/\\\//g, '/'), quality: 'HLS m3u8' })
+        links.push({ url: url.replace(/\\\//g, '/'), quality: 'HLS m3u8 (ممتاز لأبل تي في والاندرويد)' })
       );
     }
 
-    // mp4
+    // تصفية روابط البث MP4
     const mp4Matches = html.match(/https?:\/\/[^\s"'<>\\)]+\.mp4[^\s"'<>\\)]*/gi);
     if (mp4Matches) {
       [...new Set(mp4Matches)].forEach(url => 
-        links.push({ url: url.replace(/\\\//g, '/'), quality: 'MP4' })
+        links.push({ url: url.replace(/\\\//g, '/'), quality: 'MP4 مباشر' })
       );
     }
 
-    // file: "..." في المشغلات
     const fileMatches = html.match(/(?:file|src|source)\s*[:=]\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)/gi);
     if (fileMatches) {
       fileMatches.forEach(m => {
         const url = m.match(/["']([^"']+)["']/)?.[1];
         if (url && !links.find(l => l.url === url)) {
-          links.push({ url, quality: 'Source' });
+          links.push({ url, quality: 'سورس البث المباشر' });
         }
       });
     }
 
   } catch (e) {
-    console.log(`فشل ${server.name}:`, e.message);
+    console.log(`فشل استخراج السيرفر:`, e.message);
   }
   return links;
 }
 
-// ============ فك تشفير JS Packer ============
+// ============ فك حزم الـ JavaScript المشفرة للمشغلات ============
 function unpackJS(source) {
   try {
     const match = /eval\(function\(p,a,c,k,e,[dr]\).*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)/s.exec(source);
@@ -351,78 +355,110 @@ function unpackJS(source) {
   }
 }
 
-// ============ المسارات (Routes) ============
-app.get('/', (req, res) => {
-  res.send(`
-    <h1>ArabSeed Stremio Addon</h1>
-    <p>رابط التثبيت: <a href="/manifest.json">/manifest.json</a></p>
-  `);
-});
+// ============ المحرك الرئيسي والموجه لـ Vercel Serverless Function ============
+export default async function handler(req, res) {
+  // تفعيل خيارات الـ CORS لتشغيل الإضافة على كافة مشغلات ستريميو والأنظمة
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
 
-app.get('/manifest.json', (req, res) => {
-  res.json(manifest);
-});
-
-app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
-  const { type } = req.params;
-  let extra = req.params.extra || '';
-  extra = extra.replace('.json', '');
-  
-  const params = {};
-  if (extra) {
-    extra.split('&').forEach(p => {
-      const [k, v] = p.split('=');
-      if (k) params[k] = decodeURIComponent(v || '');
-    });
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
-  const cacheKey = `cat_${type}_${params.search || ''}_${params.skip || 0}`;
-  let metas = getCache(cacheKey);
-  
-  if (!metas) {
-    metas = await fetchCatalog(type, params.search, parseInt(params.skip) || 0);
-    setCache(cacheKey, metas);
+  const urlPath = req.url;
+
+  // 1. مسار الصفحة الرئيسية للإضافة على متصفح الويب
+  if (urlPath === '/' || urlPath === '') {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(`
+      <h1>ArabSeed Stremio Addon (جوجل بروكسي آمن)</h1>
+      <p>الإضافة تعمل بنجاح وبدون حظر IP.</p>
+      <p>رابط التثبيت داخل ستريميو: <br> <code>https://${req.headers.host}/manifest.json</code></p>
+    `);
   }
 
-  res.json({ metas });
-});
-
-app.get('/meta/:type/:id.json', async (req, res) => {
-  const { type, id } = req.params;
-  const cacheKey = `meta_${id}`;
-  let meta = getCache(cacheKey);
-  
-  if (!meta) {
-    meta = await fetchMeta(id, type);
-    if (meta) setCache(cacheKey, meta);
+  // 2. مسار الـ Manifest
+  if (urlPath === '/manifest.json') {
+    return res.status(200).json(manifest);
   }
 
-  res.json({ meta: meta || {} });
-});
-
-app.get('/stream/:type/:id.json', async (req, res) => {
-  const { id } = req.params;
-  const cacheKey = `stream_${id}`;
-  let streams = getCache(cacheKey);
-  
-  if (!streams) {
+  // 3. مسار جلب الأقسام والبحث (Catalog)
+  if (urlPath.includes('/catalog/')) {
     try {
-      const url = decodeId(id);
-      streams = await fetchStreams(url);
-      if (streams.length > 0) setCache(cacheKey, streams);
+      // تفكيك المتغيرات من الروابط على هيكلية ستريميو القياسية
+      const cleanPath = urlPath.replace('.json', '');
+      const parts = cleanPath.split('/');
+      const type = parts[2];
+      const id = parts[3];
+      const extraStr = parts[4] || '';
+
+      const params = {};
+      if (extraStr) {
+        extraStr.split('&').forEach(p => {
+          const [k, v] = p.split('=');
+          if (k) params[k] = decodeURIComponent(v || '');
+        });
+      }
+
+      const cacheKey = `cat_${type}_${params.search || ''}_${params.skip || 0}`;
+      let metas = getCache(cacheKey);
+      
+      if (!metas) {
+        metas = await fetchCatalog(type, params.search, parseInt(params.skip) || 0);
+        setCache(cacheKey, metas);
+      }
+
+      return res.status(200).json({ metas });
     } catch (e) {
-      console.error(e);
-      streams = [];
+      return res.status(500).json({ metas: [], error: e.toString() });
     }
   }
 
-  res.json({ streams });
-});
+  // 4. مسار جلب تفاصيل الفيلم/المسلسل (Meta)
+  if (urlPath.includes('/meta/')) {
+    try {
+      const cleanPath = urlPath.replace('.json', '');
+      const parts = cleanPath.split('/');
+      const type = parts[2];
+      const id = parts[3];
 
-// تشغيل محلي
-if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`✅ http://localhost:${PORT}/manifest.json`));
+      const cacheKey = `meta_${id}`;
+      let meta = getCache(cacheKey);
+      
+      if (!meta) {
+        meta = await fetchMeta(id, type);
+        if (meta) setCache(cacheKey, meta);
+      }
+
+      return res.status(200).json({ meta: meta || {} });
+    } catch (e) {
+      return res.status(500).json({ meta: {}, error: e.toString() });
+    }
+  }
+
+  // 5. مسار جلب الروابط والسيرفرات لتشغيل الفيديو (Stream)
+  if (urlPath.includes('/stream/')) {
+    try {
+      const cleanPath = urlPath.replace('.json', '');
+      const parts = cleanPath.split('/');
+      const type = parts[2];
+      const id = parts[3];
+
+      const cacheKey = `stream_${id}`;
+      let streams = getCache(cacheKey);
+      
+      if (!streams) {
+        const url = decodeId(id);
+        streams = await fetchStreams(url);
+        if (streams && streams.length > 0) setCache(cacheKey, streams);
+      }
+
+      return res.status(200).json({ streams: streams || [] });
+    } catch (e) {
+      return res.status(500).json({ streams: [], error: e.toString() });
+    }
+  }
+
+  return res.status(404).json({ error: "مسار غير مدعوم" });
 }
-
-module.exports = app;
