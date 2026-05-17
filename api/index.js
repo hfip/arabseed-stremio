@@ -1,16 +1,16 @@
 // api/index.js
 const cheerio = require('cheerio');
 
-// ============ إعداد البروكسي الآمن من جوجل ============
+// ============ إعداد البروكسي والدومينات الدوارة المستخلصة ============
 const GOOGLE_PROXY_URL = "https://script.google.com/macros/s/AKfycbwzwsaeYrNMVo39ot5D2ah72SWsN1NaKa-_0yagRowbZNnByWwBiu94mO6mAUjwVGhSrQ/exec";
-const BASE_URL = 'https://m.asd.ink';
+const BASE_URL = 'https://m.asd.ink'; 
 
 // ============ Manifest ============
 const manifest = {
-  id: 'org.arabseed.asd',
-  version: '1.0.2',
-  name: 'ArabSeed Proxy Fixed',
-  description: 'إصلاح حماية روابط البث والترميز عبر بروكسي جوجل',
+  id: 'org.arabseed.asd.proxy',
+  version: '1.1.0',
+  name: 'ArabSeed Pro Max',
+  description: 'إضافة عرب سيد الاحترافية لفك تشفير المشغلات والجودات المباشرة عبر بروكسي جوجل الآمن',
   logo: 'https://m.asd.ink/wp-content/uploads/2023/01/cropped-Untitled-1-1-192x192.png',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
@@ -37,9 +37,9 @@ const manifest = {
   idPrefixes: ['as_']
 };
 
-// ============ Cache ============
+// ============ Cache (التخزين المؤقت لسرعة الاستجابة وحماية السيرفر) ============
 const cache = new Map();
-const CACHE_TTL = 30 * 60 * 1000;
+const CACHE_TTL = 20 * 60 * 1000; // 20 دقيقة
 
 const getCache = (key) => {
   const item = cache.get(key);
@@ -59,7 +59,7 @@ const setCache = (key, data) => {
 const encodeId = (url) => 'as_' + Buffer.from(url).toString('base64url');
 const decodeId = (id) => Buffer.from(id.replace('as_', ''), 'base64url').toString();
 
-// ============ جلب البيانات مع تأمين ترميز النصوص ============
+// ============ دالة جلب البيانات مع تأمين ترميز النصوص والتايم أوت تكتيكياً ============
 async function fetchViaProxy(action, targetUrl = '', searchQuery = '') {
   try {
     let proxyUrl = `${GOOGLE_PROXY_URL}?action=${action}`;
@@ -70,7 +70,7 @@ async function fetchViaProxy(action, targetUrl = '', searchQuery = '') {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
+    const timeoutId = setTimeout(() => controller.abort(), 7500); // 7.5 ثوانٍ حماية لـ Vercel
 
     const response = await fetch(proxyUrl, { 
       method: 'GET',
@@ -80,7 +80,6 @@ async function fetchViaProxy(action, targetUrl = '', searchQuery = '') {
     clearTimeout(timeoutId);
     if (!response.ok) return null;
 
-    // إجبار الاستجابة على القراءة بترميز UTF-8 لحل مشكلة علامات الاستفهام والرموز الغريبة
     const buffer = await response.arrayBuffer();
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(buffer);
@@ -90,7 +89,7 @@ async function fetchViaProxy(action, targetUrl = '', searchQuery = '') {
   }
 }
 
-// ============ Catalog ============
+// ============ Catalog (الأقسام والبحث التلقائي) ============
 async function fetchCatalog(type, search, skip = 0) {
   try {
     const page = Math.floor(skip / 30) + 1;
@@ -111,12 +110,12 @@ async function fetchCatalog(type, search, skip = 0) {
     const $ = cheerio.load(htmlData);
     const results = [];
 
-    $('.MovieBlock, .Block--Item, article, .Small--Box').each((i, el) => {
+    $('.MovieBlock, .Block--Item, article, .Small--Box, .movie__block').each((i, el) => {
       const $el = $(el);
       const linkEl = $el.find('a').first();
       const link = linkEl.attr('href');
       
-      const title = $el.find('h3, h4, .BlockTitle, .Title').first().text().trim()
+      const title = $el.find('h3, h4, .BlockTitle, .Title, p').first().text().trim()
         || linkEl.attr('title')
         || $el.find('img').attr('alt');
       
@@ -140,7 +139,7 @@ async function fetchCatalog(type, search, skip = 0) {
   }
 }
 
-// ============ Meta ============
+// ============ Meta (معلومات الفيلم والحلقات) ============
 async function fetchMeta(id, type) {
   try {
     const url = decodeId(id);
@@ -149,9 +148,9 @@ async function fetchMeta(id, type) {
 
     const $ = cheerio.load(htmlData);
 
-    const name = $('h1').first().text().trim() || $('.Title--Block h1').text().trim();
-    const poster = $('.Poster img, .single-thumb img, .post-thumbnail img').first().attr('src');
-    const description = $('.descrip, .StoryLine, .post-content p').first().text().trim();
+    const name = $('h1').first().text().trim() || $('.Title--Block h1').text().trim() || $('title').text().trim();
+    const poster = $('.Poster img, .single-thumb img, .post-thumbnail img, .movie-poster img').first().attr('src');
+    const description = $('.descrip, .StoryLine, .post-content p, .story').first().text().trim();
 
     const meta = {
       id,
@@ -163,13 +162,13 @@ async function fetchMeta(id, type) {
       genres: []
     };
 
-    $('.Genre a, .genres a').each((i, el) => {
+    $('.Genre a, .genres a, .genre a').each((i, el) => {
       meta.genres.push($(el).text().trim());
     });
 
     if (type === 'series') {
       const videos = [];
-      $('.EpisodesList a, .episodes-list a, .ContainerEpisodesList a').each((i, el) => {
+      $('.EpisodesList a, .episodes-list a, .ContainerEpisodesList a, .EpsList a').each((i, el) => {
         const epUrl = $(el).attr('href');
         const epTitle = $(el).text().trim() || `الحلقة ${i + 1}`;
         const epNum = parseInt(epTitle.match(/\d+/)?.[0]) || (i + 1);
@@ -194,7 +193,7 @@ async function fetchMeta(id, type) {
   }
 }
 
-// ============ Streams & Hotlink Protection Bypass ============
+// ============ Streams (تفكيك الـ Base64 وسحب الروابط الصافية) ============
 async function fetchStreams(pageUrl) {
   const streams = [];
   try {
@@ -203,9 +202,13 @@ async function fetchStreams(pageUrl) {
     
     let $ = cheerio.load(pageHtml);
 
+    // التحويل الإجباري لصفحة الـ /watch/ كما تفعل ملفات الدفعة الثانية
     let watchUrl = pageUrl;
-    const watchLink = $('a.watchBtn, a[href*="/watch/"], .WatchBTN a, a:contains("مشاهدة")').first().attr('href');
-    if (watchLink) watchUrl = watchLink;
+    if (!watchUrl.endsWith('/watch/')) {
+      const watchLink = $('a.watchBtn, a[href*="/watch/"], .WatchBTN a, a:contains("مشاهدة")').first().attr('href');
+      if (watchLink) watchUrl = watchLink;
+      else watchUrl = watchUrl.rstrip('/') + '/watch/';
+    }
 
     const watchHtml = await fetchViaProxy('get_links', watchUrl);
     if (!watchHtml) return [];
@@ -213,31 +216,45 @@ async function fetchStreams(pageUrl) {
     const $w = cheerio.load(watchHtml);
     const servers = [];
     
-    $w('[data-link], [data-server], .server-item, .servers li, .ServersList li, ul.WatchVideoList li').each((i, el) => {
+    // 1. التقاط وفك تشفير روابط play.php?url=BASE64 السرية لحل مشكلة عدم التشغيل
+    const watchHtmlString = watchHtml;
+    const b64Regex = /play\.php\?url=([a-zA-Z0-9+/=]+)/g;
+    let match;
+    while ((match = b64Regex.exec(watchHtmlString)) !== null) {
+      try {
+        let b64Str = match[1];
+        // معالجة الـ Padding المذكورة في ملف البايثون
+        const padding = 4 - (b64Str.length % 4);
+        if (padding !== 4) b64Str += '='.repeat(padding);
+        
+        const decoded = Buffer.from(b64Str, 'base64').toString('utf-8');
+        if (decoded.startsWith('http') && !servers.some(s => s.link === decoded)) {
+          servers.push({ name: 'عرب سيد مباشر ⚡', link: decoded });
+        }
+      } catch (e) {}
+    }
+
+    // 2. التقاط السيرفرات المدمجة التقليدية والـ iframes
+    $w('[data-link], [data-server], .server-item, .servers li, a[data-quality]').each((i, el) => {
       const $el = $w(el);
-      let link = $el.attr('data-link') || $el.attr('data-server') || $el.find('a').attr('href');
-      let name = $el.text().trim() || `Server ${i + 1}`;
+      let link = $el.attr('data-link') || $el.attr('data-server') || $el.attr('href');
+      let qLabel = $el.attr('data-quality') ? `${$el.attr('data-quality')}p` : '';
+      let name = $el.text().trim() || `سيرفر ${qLabel || i + 1}`;
       
-      if (link && /^[A-Za-z0-9+/=]+$/.test(link) && link.length > 20) {
-        try {
-          const decoded = Buffer.from(link, 'base64').toString();
-          if (decoded.startsWith('http')) link = decoded;
-        } catch (e) {}
-      }
-      
-      if (link && link.startsWith('http')) {
+      if (link && link.startsWith('http') && !servers.some(s => s.link === link)) {
         servers.push({ name, link });
       }
     });
 
     $w('iframe').each((i, el) => {
       let src = $w(el).attr('src') || $w(el).attr('data-src');
-      if (!src) return;
-      if (src.startsWith('/')) src = BASE_URL + src;
-      servers.push({ name: `Player ${i + 1}`, link: src });
+      if (src && src.startsWith('http') && !servers.some(s => s.link === src)) {
+        servers.push({ name: `مشغل مدمج ${i + 1}`, link: src });
+      }
     });
 
-    const optimizedServers = servers.slice(0, 3);
+    // نأخذ أعلى 4 سيرفرات تم فك تشفيرها بالتوازي لضمان السرعة وعدم الانهيار
+    const optimizedServers = servers.slice(0, 4);
     const extractions = await Promise.allSettled(
       optimizedServers.map(s => extractFromServer(s.link))
     );
@@ -247,14 +264,13 @@ async function fetchStreams(pageUrl) {
         result.value.forEach(link => {
           streams.push({
             name: 'ArabSeed Pro',
-            title: `▶️ ${optimizedServers[i].name} (${link.quality})`,
+            title: `🎬 ${optimizedServers[i].name}\n🔗 الجودة: ${link.quality}`,
             url: link.url,
-            // التعديل الجوهري: إرسال هيدرز الحماية لتطبيق ستريميو ليفك حظر السيرفر أثناء التشغيل المباشر
             behaviorHints: {
               notWebReady: false,
               proxyHeaders: {
                 request: {
-                  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                   "Referer": optimizedServers[i].link,
                   "Origin": new URL(optimizedServers[i].link).origin
                 }
@@ -265,12 +281,12 @@ async function fetchStreams(pageUrl) {
       }
     });
 
-    // إذا لم نجد روابط مباشرة، نضع رابطاً للمشاهدة على الويب الخارجي كحل احتياطي نظيف
+    // خطة الطوارئ البديلة (لحماية الواجهة من الفراغ التام)
     if (streams.length === 0) {
       streams.push({
-        name: 'ArabSeed External',
-        title: '🌐 فتح صفحة المشاهدة الخارجية',
-        externalUrl: watchUrl
+        name: 'ArabSeed Direct',
+        title: '🌐 سيرفر تشغيل مباشر احتياطي لكود الصفحة',
+        url: watchUrl
       });
     }
 
@@ -280,32 +296,42 @@ async function fetchStreams(pageUrl) {
   }
 }
 
+// ============ استخراج صيغ ملفات الفيديو من السيرفر المفتوح ============
 async function extractFromServer(serverLink) {
   const links = [];
   try {
     const htmlData = await fetchViaProxy('get_links', serverLink);
     if (!htmlData) return [];
 
-    let html = htmlData;
+    const html = htmlData;
 
+    // استخراج جودات الـ HLS m3u8 للمشاهدة السلسة بدون تقطيع
     const m3u8Matches = html.match(/https?:\/\/[^\s"'<>\\)]+\.m3u8[^\s"'<>\\)]*/gi);
     if (m3u8Matches) {
-      [...new Set(m3u8Matches)].forEach(url => 
-        links.push({ url: url.replace(/\\\//g, '/'), quality: 'HLS m3u8' })
-      );
+      [...new Set(m3u8Matches)].forEach(url => {
+        let quality = 'تلقائية HLS';
+        if (url.includes('1080')) quality = '1080p (FHD)';
+        else if (url.includes('720')) quality = '720p (HD)';
+        else if (url.includes('480')) quality = '480p (SD)';
+        links.push({ url: url.replace(/\\\//g, '/'), quality });
+      });
     }
 
+    // استخراج روابط الـ MP4 المباشرة للتحميل والتشغيل على كافة المشغلات
     const mp4Matches = html.match(/https?:\/\/[^\s"'<>\\)]+\.mp4[^\s"'<>\\)]*/gi);
     if (mp4Matches) {
-      [...new Set(mp4Matches)].forEach(url => 
-        links.push({ url: url.replace(/\\\//g, '/'), quality: 'MP4' })
-      );
+      [...new Set(mp4Matches)].forEach(url => {
+        let quality = 'سورس مباشر MP4';
+        if (url.includes('1080')) quality = '1080p [سريع]';
+        else if (url.includes('720')) quality = '720p [سريع]';
+        links.push({ url: url.replace(/\\\//g, '/'), quality });
+      });
     }
   } catch (e) {}
   return links;
 }
 
-// ============ Handler ============
+// ============ الموجه والمنظم لـ Vercel Serverless Function ============
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -320,8 +346,8 @@ export default async function handler(req, res) {
   if (urlPath === '/' || urlPath === '') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(200).send(`
-      <h1>ArabSeed Stremio Addon</h1>
-      <p>الإضافة تعمل بنجاح وبأعلى كفاءة لفك الحظر والترميز.</p>
+      <h1>ArabSeed Stremio Addon Pro Max</h1>
+      <p>الإضافة تعمل بأعلى كفاءة ومميزات فك التشفير الـ Base64 مفعلة الآن.</p>
     `);
   }
 
