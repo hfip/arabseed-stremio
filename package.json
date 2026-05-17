@@ -1,15 +1,9 @@
 {
-  "name": "arabseed-stremio",
+  "name": "arabseed-proxy-addon",
   "version": "1.0.0",
+  "description": "Stremio Addon for Arabseed using Google Proxy",
   "main": "api/index.js",
-  "scripts": {
-    "start": "node api/index.js",
-    "dev": "node api/index.js"
-  },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.7",
-    "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5"
+    "cheerio": "^1.0.0-rc.12"
   }
 }
